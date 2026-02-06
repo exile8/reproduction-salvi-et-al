@@ -4,6 +4,7 @@ import torch
 import collections
 import os
 import soundfile as sf
+from .vad import trim_silence
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from tqdm.auto import tqdm
@@ -12,6 +13,14 @@ from tqdm.auto import tqdm
 ASVFile = collections.namedtuple('ASVFile',
     ['speaker_id', 'file_name', 'path', 'sys_id', 'key'])
 
+def pad(x, max_len=64000):
+    x_len = x.shape[0]
+    if x_len >= max_len:
+        return x[:max_len]
+    num_repeats = int(np.ceil(max_len / x_len))
+    padded_x = np.tile(x, num_repeats)[:max_len]
+    return padded_x
+
 class ASVDataset(Dataset):
     """ Utility class to load  train/dev datatsets """
     def __init__(
@@ -19,7 +28,7 @@ class ASVDataset(Dataset):
         is_train=True, sample_size=None, 
         is_logical=True, feature_name=None, is_eval=False,
         eval_part=0, cache_dir='data_caches',
-        max_duration=None, pad_to_max=False
+        max_duration=None, pad_to_max=False, use_vad=False
     ):
 
         track = 'LA'   
@@ -30,6 +39,7 @@ class ASVDataset(Dataset):
         self.prefix = 'ASVspoof2019_{}'.format(track)
         self.max_duration = max_duration
         self.pad_to_max = pad_to_max
+        self.use_vad = use_vad
         
         v1_suffix = ''
         if is_eval and track == 'LA':
@@ -91,9 +101,10 @@ class ASVDataset(Dataset):
 
         duration_suffix = f'_{max_duration}s' if max_duration else ''
         pad_suffix = '_pad' if pad_to_max else ''
+        vad_suffix = '_vad' if use_vad else ''
         self.cache_fname = os.path.join(self.cache_dir, 
-            'cache_{}_{}_{}{}{}.npy'.format(
-                self.dset_name, track, feature_name, duration_suffix, pad_suffix))
+            'cache_{}_{}_{}{}{}{}.npy'.format(
+                self.dset_name, track, feature_name, duration_suffix, pad_suffix, vad_suffix))
         print('cache_fname', self.cache_fname)
         
         self.transform = transform
@@ -140,19 +151,17 @@ class ASVDataset(Dataset):
 
     def read_file(self, meta):
         
-        data_x, sample_rate = sf.read(meta.path)
+        data_x, sample_rate = sf.read(meta.path, dtype='float32')
         data_y = meta.key
+
+        if self.use_vad:
+            data_x = trim_silence(data_x, sample_rate=sample_rate)
 
         if self.max_duration is not None:
             max_samples = int(self.max_duration * sample_rate)
-            
-            if len(data_x) > max_samples:
-                data_x = data_x[:max_samples]
-            elif len(data_x) < max_samples and self.pad_to_max:
-                padding = max_samples - len(data_x)
-                data_x = np.pad(data_x, (0, padding), mode='constant', constant_values=0)
+            data_x = pad(data_x, max_len=max_samples)
                 
-        return data_x, float(data_y), meta.sys_id
+        return data_x, int(data_y), meta.sys_id
 
     def _parse_line(self, line):
         tokens = line.strip().split(' ')
@@ -172,6 +181,17 @@ class ASVDataset(Dataset):
         lines = open(protocols_fname).readlines()
         files_meta = map(self._parse_line, lines)
         return list(files_meta)
+
+
+def collate_fn_asvspoof(batch):
+    features, labels, metas = zip(*batch)
+ 
+    features = torch.stack(features)
+    labels = torch.tensor(labels, dtype=torch.long)
+    
+    metas = list(metas)
+    
+    return features, labels, metas
 
    
 
