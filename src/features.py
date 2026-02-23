@@ -15,3 +15,20 @@ log_spectrum_extractor = T.Compose([
     lambda x: get_log_spectrum(x),
     T.ToTensor()
 ])
+
+def isolate_frequency_band(spec, num_bands, isolated_band):
+    masked = spec.clone()
+    
+    freq_bins = spec.shape[-2]
+    band_size = freq_bins // num_bands
+
+    for i in range(num_bands):
+        if i != isolated_band:
+            start = i * band_size
+            end = (i + 1) * band_size if i < num_bands - 1 else freq_bins
+            masked[..., start:end, :] = 0.
+
+    return masked
+
+def band_isolator(num_bands, isolated_band):
+    return lambda x: isolate_frequency_band(x, num_bands, isolated_band)
