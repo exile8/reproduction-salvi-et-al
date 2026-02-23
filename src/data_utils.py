@@ -13,27 +13,35 @@ from tqdm.auto import tqdm
 ASVFile = collections.namedtuple('ASVFile',
     ['speaker_id', 'file_name', 'path', 'sys_id', 'key'])
 
-def pad(x, max_len=64000):
+def pad(x, max_len=64000, pad_to_max=False):
     x_len = x.shape[0]
     if x_len >= max_len:
         return x[:max_len]
-    num_repeats = int(np.ceil(max_len / x_len))
-    padded_x = np.tile(x, num_repeats)[:max_len]
-    return padded_x
+
+    if x_len < max_len and pad_to_max:
+        num_repeats = int(np.ceil(max_len / x_len))
+        padded_x = np.tile(x, num_repeats)[:max_len]
+        return padded_x
+    else:
+        return x
 
 class ASVDataset(Dataset):
     """ Utility class to load  train/dev datatsets """
     def __init__(
-        self, database_path=None,protocols_path=None,transform=None, 
+        self, database_path=None, protocols_path=None,
+        transform=None, online_transform=None,
         is_train=True, sample_size=None, 
         is_logical=True, feature_name=None, is_eval=False,
-        eval_part=0, cache_dir='data_caches',
-        max_duration=None, pad_to_max=False, use_vad=False
+        eval_part=0, cache_dir='data_caches', separation_cache_dir='separation_caches',
+        max_duration=None, pad_to_max=False, use_vad=False,
+        audio_component='original', separation_model='denoiser'
     ):
 
         track = 'LA'   
         data_root=protocols_path      
         assert feature_name is not None, 'must provide feature name'
+        assert audio_component in {'original', 'speech', 'noise'}, 'audio_component must be either "original", "speech" or "noise"'
+        assert separation_model in {'denoiser', 'sepformer'}, 'separation model must be either "denoiser" or "sepformer"'
         self.track = track
         self.is_logical = is_logical
         self.prefix = 'ASVspoof2019_{}'.format(track)
@@ -108,6 +116,7 @@ class ASVDataset(Dataset):
         print('cache_fname', self.cache_fname)
         
         self.transform = transform
+        self.online_transform = online_transform
 
         if os.path.exists(self.cache_fname):
             print(f'Loading dataset from cache: {self.cache_fname}')
@@ -147,6 +156,11 @@ class ASVDataset(Dataset):
     def __getitem__(self, idx):
         x = self.data_x[idx]
         y = self.data_y[idx]
+        
+        if self.online_transform:
+            x_tf = self.online_transform(x)
+            return x_tf, y, self.files_meta[idx]
+            
         return x, y, self.files_meta[idx]
 
     def read_file(self, meta):
@@ -159,7 +173,7 @@ class ASVDataset(Dataset):
 
         if self.max_duration is not None:
             max_samples = int(self.max_duration * sample_rate)
-            data_x = pad(data_x, max_len=max_samples)
+            data_x = pad(data_x, max_len=max_samples, pad_to_max=self.pad_to_max)
                 
         return data_x, int(data_y), meta.sys_id
 
