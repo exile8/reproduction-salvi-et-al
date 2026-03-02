@@ -4,7 +4,7 @@ import torch
 import collections
 import os
 import soundfile as sf
-from .vad import trim_silence
+from .vad import trim_silence, vad_mask
 from torch.utils.data import DataLoader, Dataset
 import numpy as np
 from tqdm.auto import tqdm
@@ -33,7 +33,7 @@ class ASVDataset(Dataset):
         is_train=True, sample_size=None, 
         is_logical=True, feature_name=None, is_eval=False,
         eval_part=0, cache_dir='data_caches', separation_cache_dir='separation_caches',
-        max_duration=None, pad_to_max=False, use_vad=False,
+        max_duration=None, pad_to_max=False, use_vad=False, use_vad_masks=False,
         audio_component='original', separation_model='denoiser'
     ):
 
@@ -48,6 +48,7 @@ class ASVDataset(Dataset):
         self.max_duration = max_duration
         self.pad_to_max = pad_to_max
         self.use_vad = use_vad
+        self.use_vad_masks = use_vad_masks
         
         v1_suffix = ''
         if is_eval and track == 'LA':
@@ -110,10 +111,18 @@ class ASVDataset(Dataset):
         duration_suffix = f'_{max_duration}s' if max_duration else ''
         pad_suffix = '_pad' if pad_to_max else ''
         vad_suffix = '_vad' if use_vad else ''
+        mask_suffix = '_masks' if use_vad_masks else ''
+        
         self.cache_fname = os.path.join(self.cache_dir, 
             'cache_{}_{}_{}{}{}{}.npy'.format(
                 self.dset_name, track, feature_name, duration_suffix, pad_suffix, vad_suffix))
         print('cache_fname', self.cache_fname)
+
+        self.mask_cache_fname = os.path.join(self.cache_dir,
+            'cache_{}_{}_{}{}{}{}{}.npy'.format(
+                self.dset_name, track, feature_name,
+                duration_suffix, pad_suffix, vad_suffix, mask_suffix))
+        print('mask_cache_fname', self.mask_cache_fname)
         
         self.transform = transform
         self.online_transform = online_transform
@@ -140,6 +149,23 @@ class ASVDataset(Dataset):
             print(f'Saving cache to: {self.cache_fname}')
             torch.save((self.data_x, self.data_y, self.data_sysid, self.files_meta), self.cache_fname)
             print('Cache saved successfully')
+
+        self.data_masks = None
+        if use_vad_masks:
+            if os.path.exists(self.mask_cache_fname):
+                print(f'Loading VAD masks from cache: {self.mask_cache_fname}')
+                self.data_masks = torch.load(self.mask_cache_fname, weights_only=False)
+                print('VAD masks loaded from cache successfully')
+            else:
+                print('VAD mask cache not found. Computing masks...')
+                self.data_masks = []
+                for x in tqdm(self.data_x, desc='Computing VAD masks', unit='sample'):
+                    audio_np = x.numpy() if isinstance(x, torch.Tensor) else x
+                    silence_mask = torch.from_numpy(1.0 - vad_mask(audio_np))
+                    self.data_masks.append(silence_mask)
+                print(f'Saving VAD mask cache to: {self.mask_cache_fname}')
+                torch.save(self.data_masks, self.mask_cache_fname)
+                print('VAD mask cache saved successfully')
             
         if sample_size:
             select_idx = np.random.choice(len(self.files_meta), size=(sample_size,), replace=True).astype(np.int32)
@@ -147,6 +173,8 @@ class ASVDataset(Dataset):
             self.data_x = [self.data_x[x] for x in select_idx]
             self.data_y = [self.data_y[x] for x in select_idx]
             self.data_sysid = [self.data_sysid[x] for x in select_idx]
+            if self.data_masks is not None:
+                self.data_masks = [self.data_masks[x] for x in select_idx]
             
         self.length = len(self.data_x)
 
@@ -158,8 +186,10 @@ class ASVDataset(Dataset):
         y = self.data_y[idx]
         
         if self.online_transform:
-            x_tf = self.online_transform(x)
-            return x_tf, y, self.files_meta[idx]
+            x = self.online_transform(x)
+
+        if self.data_masks is not None:
+            return x, y, self.files_meta[idx], self.data_masks[idx]
             
         return x, y, self.files_meta[idx]
 
@@ -198,6 +228,16 @@ class ASVDataset(Dataset):
 
 
 def collate_fn_asvspoof(batch):
+    has_masks = len(batch[0]) == 4
+    if has_masks:
+        features, labels, metas, masks = zip(*batch)
+        return (
+            torch.stack(features),
+            torch.tensor(labels, dtype=torch.long),
+            list(metas),
+            torch.stack(masks)
+        )
+
     features, labels, metas = zip(*batch)
  
     features = torch.stack(features)
