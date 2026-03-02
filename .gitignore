@@ -209,3 +209,4 @@ __marimo__/
 # Project-specific
 data/
 data_caches/
+models/
