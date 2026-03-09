@@ -161,7 +161,7 @@ class ASVDataset(Dataset):
                 self.data_masks = []
                 for x in tqdm(self.data_x, desc='Computing VAD masks', unit='sample'):
                     audio_np = x.numpy() if isinstance(x, torch.Tensor) else x
-                    silence_mask = torch.from_numpy(1.0 - vad_mask(audio_np))
+                    silence_mask = torch.from_numpy(vad_mask(audio_np))
                     self.data_masks.append(silence_mask)
                 print(f'Saving VAD mask cache to: {self.mask_cache_fname}')
                 torch.save(self.data_masks, self.mask_cache_fname)
