@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
 anyio==4.12.1
 asttokens==3.0.1
 audioread==3.1.0
@@ -40,7 +41,7 @@ jupyterlab_widgets==3.0.16
 kiwisolver==1.4.9
 lazy_loader==0.4
 librosa==0.11.0
-lime==0.2.0.1
+git+https://github.com/marcotcr/lime.git
 llvmlite==0.46.0
 MarkupSafe==2.1.5
 matplotlib==3.10.8
